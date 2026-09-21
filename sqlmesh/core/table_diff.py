@@ -353,11 +353,17 @@ class TableDiff:
         self, temp_schema: t.Optional[str] = None, skip_grain_check: bool = False
     ) -> RowDiff:
         if self._row_diff is None:
+            source_skip_columns = {
+                self._resolve_column_name(c, self.source_schema) for c in self.skip_columns
+            }
+            target_skip_columns = {
+                self._resolve_column_name(c, self.target_schema) for c in self.skip_columns
+            }
             source_schema = {
-                c: t for c, t in self.source_schema.items() if c not in self.skip_columns
+                c: t for c, t in self.source_schema.items() if c not in source_skip_columns
             }
             target_schema = {
-                c: t for c, t in self.target_schema.items() if c not in self.skip_columns
+                c: t for c, t in self.target_schema.items() if c not in target_skip_columns
             }
 
             s_selects = {c: exp.column(c, "s").as_(f"s__{c}") for c in source_schema}

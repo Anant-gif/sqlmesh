@@ -1256,6 +1256,66 @@ def test_data_diff_non_lowercase_key_columns():
     assert diff.t_only_count == 1
 
 
+def test_data_diff_non_lowercase_skip_columns():
+    engine_adapter = DuckDBConnectionConfig().create_engine_adapter()
+
+    columns_to_types = {
+        "KEY": exp.DataType.build("int"),
+        "VALUE": exp.DataType.build("varchar"),
+        "IGNORED": exp.DataType.build("varchar"),
+    }
+
+    engine_adapter.create_table("src", columns_to_types)
+    engine_adapter.create_table("target", columns_to_types)
+    engine_adapter.insert_append(
+        "src",
+        pd.DataFrame([(1, "same", "source")], columns=columns_to_types),
+    )
+    engine_adapter.insert_append(
+        "target",
+        pd.DataFrame([(1, "same", "target")], columns=columns_to_types),
+    )
+
+    diff = TableDiff(
+        adapter=engine_adapter,
+        source="src",
+        target="target",
+        on=["key"],
+        skip_columns=["ignored"],
+    ).row_diff()
+
+    assert diff.full_match_count == 1
+    assert diff.partial_match_count == 0
+    assert diff.column_stats.index.tolist() == ["VALUE"]
+
+
+def test_skip_columns_across_schemas():
+    engine_adapter = DuckDBConnectionConfig().create_engine_adapter()
+    table_diff = TableDiff(
+        adapter=engine_adapter,
+        source="src",
+        target="target",
+        on=["key"],
+        skip_columns=["foo"],
+    )
+    data_type = exp.DataType.build("varchar")
+    table_diff.__dict__["source_schema"] = {"foo": data_type, "FOO": data_type}
+    table_diff.__dict__["target_schema"] = {"FOO": data_type}
+
+    source_skip_columns = {
+        table_diff._resolve_column_name(c, table_diff.source_schema)
+        for c in table_diff.skip_columns
+    }
+    target_skip_columns = {
+        table_diff._resolve_column_name(c, table_diff.target_schema)
+        for c in table_diff.skip_columns
+    }
+
+    assert source_skip_columns == {"foo"}
+    assert target_skip_columns == {"FOO"}
+    assert "FOO" not in source_skip_columns
+
+
 def test_data_diff_key_columns_with_differing_case_between_source_and_target():
     engine_adapter = DuckDBConnectionConfig().create_engine_adapter()
 
