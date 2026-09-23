@@ -216,28 +216,34 @@ Options:
 ```
 Usage: sqlmesh export_manifest [OPTIONS]
 
-  Export dbt-style model and source metadata for external catalogs.
+  Export dbt-format manifest and catalog metadata for external tools.
 
 Options:
-  --output FILE  Where to write the SQLMesh metadata manifest. [default:
-                 target/manifest.json]
-  --help         Show this message and exit.
+  --output FILE          Where to write the SQLMesh metadata manifest.
+                         [default: target/manifest.json]
+  --catalog-output FILE  Where to write catalog.json (defaults to the directory
+                         containing the manifest).
+  --help                 Show this message and exit.
 ```
 
 This command reads the local project without connecting to the SQLMesh state store.
-It exports model and external source names, descriptions, columns and types,
-and model dependencies. For example:
+It writes a dbt v12 `manifest.json` and a dbt v1 `catalog.json` alongside it.
+The artifacts describe models, external sources, dependencies, known columns and
+types, and rendered SQL for SQL models. For example:
 
 ```bash
 sqlmesh -p ./my_project export_manifest --output target/manifest.json
 ```
 
-The output has dbt-style `nodes`, `sources`, `parent_map`, and `child_map` keys for
-metadata consumers. It is a SQLMesh metadata export, **not** a complete dbt
-manifest conforming to dbt's JSON schema. Consumers that require dbt-specific
-model configuration, compiled SQL, tests, or dbt state comparison need a native
-dbt artifact. `relation_name` is the logical production relation; this command
-does not resolve virtual environment names or deployed snapshot versions.
+Both files validate against their respective dbt JSON schemas. They are
+**metadata exports**, not records of a dbt execution: SQLMesh audits are not
+converted to dbt tests, and no run results or source freshness are generated.
+The catalog's column types come from local model definitions and inference,
+not from inspecting the warehouse. Rendered SQL uses SQLMesh's default epoch
+for time-dependent macros and is intended for documentation and lineage.
+`relation_name` is the logical production relation; this command does not
+resolve virtual environment names or deployed snapshot versions. Do not use
+these files for dbt state comparison or execution.
 
 ## fetchdf
 

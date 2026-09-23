@@ -736,16 +736,29 @@ def dag(ctx: click.Context, file: str, select_model: t.List[str]) -> None:
     show_default=True,
     help="Where to write the SQLMesh metadata manifest.",
 )
+@click.option(
+    "--catalog-output",
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="Where to write catalog.json (defaults to the directory containing the manifest).",
+)
 @click.pass_obj
 @error_handler
 @cli_analytics
-def export_manifest(obj: Context, output: Path) -> None:
-    """Export dbt-style model and source metadata for external catalogs."""
-    from sqlmesh.core.manifest import build_manifest
+def export_manifest(obj: Context, output: Path, catalog_output: t.Optional[Path]) -> None:
+    """Export dbt-format manifest and catalog metadata for external tools."""
+    from sqlmesh.core.manifest import build_catalog, build_manifest
 
+    catalog_output = catalog_output or output.with_name("catalog.json")
+    if output.resolve() == catalog_output.resolve():
+        raise click.ClickException("The manifest and catalog output paths must differ.")
+
+    manifest = build_manifest(obj)
+    catalog = build_catalog(manifest)
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(build_manifest(obj), indent=2) + "\n", encoding="utf-8")
-    obj.console.log_success(f"Generated the manifest to {output}")
+    catalog_output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    catalog_output.write_text(json.dumps(catalog, indent=2) + "\n", encoding="utf-8")
+    obj.console.log_success(f"Generated the manifest to {output} and catalog to {catalog_output}")
 
 
 @cli.command("create_test")

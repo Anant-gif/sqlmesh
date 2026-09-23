@@ -200,7 +200,9 @@ def test_export_manifest_without_state(runner, tmp_path):
 
     assert result.exit_code == 0, result.output
     manifest = json.loads(output.read_text(encoding="utf-8"))
-    assert manifest["metadata"]["format"] == "sqlmesh-dbt-metadata-v1"
+    catalog = json.loads((output.parent / "catalog.json").read_text(encoding="utf-8"))
+    assert manifest["metadata"]["dbt_schema_version"].endswith("/manifest/v12.json")
+    assert catalog["metadata"]["dbt_schema_version"].endswith("/catalog/v1.json")
     nodes = {node["name"]: node for node in manifest["nodes"].values()}
     seed = nodes["seed_model"]
     incremental = nodes["incremental_model"]
@@ -211,6 +213,9 @@ def test_export_manifest_without_state(runner, tmp_path):
     assert full["unique_id"] in manifest["child_map"][incremental["unique_id"]]
     assert manifest["parent_map"][full["unique_id"]] == [incremental["unique_id"]]
     assert incremental["relation_name"]
+    assert "@start_date" not in incremental["compiled_code"]
+    assert "FROM" in incremental["compiled_code"]
+    assert catalog["nodes"][incremental["unique_id"]]["columns"]["id"]["type"]
 
 
 def test_export_manifest_external_source_and_descriptions(runner, tmp_path):
@@ -249,6 +254,43 @@ SELECT order_id FROM raw.orders;
     assert model["depends_on"]["nodes"] == [source["unique_id"]]
     assert model["description"] == "Orders from outside SQLMesh"
     assert model["columns"]["order_id"]["description"] == "Order identifier"
+    catalog = json.loads((output.parent / "catalog.json").read_text(encoding="utf-8"))
+    assert catalog["nodes"][model["unique_id"]]["columns"]["order_id"] == {
+        "name": "order_id",
+        "index": 1,
+        "type": "INT",
+        "comment": "Order identifier",
+    }
+
+
+def test_export_manifest_validates_as_dbt_artifacts(runner, tmp_path):
+    manifest_parser = pytest.importorskip("dbt_artifacts_parser.parsers.manifest.manifest_v12")
+    catalog_parser = pytest.importorskip("dbt_artifacts_parser.parsers.catalog.catalog_v1")
+    create_example_project(tmp_path)
+    (tmp_path / "models" / "from_source.sql").write_text(
+        "MODEL (name sqlmesh_example.from_source, kind VIEW, columns (order_id INT)); "
+        "SELECT order_id FROM raw.orders;",
+        encoding="utf-8",
+    )
+    output = tmp_path / "target" / "manifest.json"
+    result = runner.invoke(
+        cli,
+        [
+            "--log-file-dir",
+            str(tmp_path),
+            "--paths",
+            str(tmp_path),
+            "export_manifest",
+            "--output",
+            str(output),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    manifest_parser.ManifestV12.model_validate(json.loads(output.read_text(encoding="utf-8")))
+    catalog_parser.CatalogV1.model_validate(
+        json.loads((output.parent / "catalog.json").read_text(encoding="utf-8"))
+    )
 
 
 def test_plan_no_config(runner, tmp_path):

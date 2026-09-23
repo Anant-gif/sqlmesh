@@ -1,12 +1,13 @@
-"""Export project metadata in the shape of the commonly consumed dbt manifest fields.
+"""Export SQLMesh project metadata as dbt v12 manifest and v1 catalog artifacts.
 
-This is a metadata interoperability format, not a dbt state artifact. In particular,
-the exported nodes cannot be used by dbt's state comparison or execution commands.
+The artifacts describe the local project, not a deployed SQLMesh environment. They
+cannot be used as inputs to dbt's state comparison or execution commands.
 """
 
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 import typing as t
 from datetime import datetime, timezone
@@ -14,9 +15,14 @@ from pathlib import Path
 
 from sqlglot import exp
 
-from sqlmesh import __version__
 from sqlmesh.core.context import Context
 from sqlmesh.core.model import Model
+from sqlmesh.utils.errors import SQLMeshError
+
+logger = logging.getLogger(__name__)
+
+MANIFEST_SCHEMA = "https://schemas.getdbt.com/dbt/manifest/v12.json"
+CATALOG_SCHEMA = "https://schemas.getdbt.com/dbt/catalog/v1.json"
 
 
 def _identifier(value: str) -> str:
@@ -44,6 +50,29 @@ def _file_path(model: Model, root: Path) -> str:
         return model._path.relative_to(root).as_posix()
     except ValueError:
         return model._path.as_posix()
+
+
+def _sql_code(model: Model) -> t.Tuple[str, t.Optional[str]]:
+    if not model.is_sql:
+        return "", None
+
+    raw_code = model.query.sql(dialect=model.dialect)
+    try:
+        # SQLMesh's renderer expands macros and resolves model references without
+        # running the SQL. Time-dependent macros use SQLMesh's epoch defaults.
+        rendered = model.render_query()
+    except SQLMeshError as ex:
+        logger.warning("Could not render %s for manifest export: %s", model.fqn, ex)
+        rendered = None
+    return raw_code, rendered.sql(dialect=model.dialect) if rendered is not None else None
+
+
+def _checksum(model: Model, raw_code: str) -> t.Dict[str, str]:
+    if model._path is not None and model._path.is_file():
+        content = model._path.read_bytes()
+    else:
+        content = (model.fqn + raw_code).encode("utf-8")
+    return {"name": "sha256", "checksum": hashlib.sha256(content).hexdigest()}
 
 
 def build_manifest(context: Context) -> t.Dict[str, t.Any]:
@@ -103,8 +132,12 @@ def build_manifest(context: Context) -> t.Dict[str, t.Any]:
                 "schema": table.db or "",
                 "relation_name": fqn,
                 "description": model.description or "" if model else "",
+                "source_description": "",
+                "loader": "",
                 "columns": columns_for(model) if model else {},
+                "path": _file_path(model, context.path) if model else "",
                 "original_file_path": _file_path(model, context.path) if model else "",
+                "fqn": [package, table.db or "external", table.name],
                 "meta": {"sqlmesh": {"owner": model.owner}} if model and model.owner else {},
             }
             parent_map[source_id] = []
@@ -129,6 +162,7 @@ def build_manifest(context: Context) -> t.Dict[str, t.Any]:
             else "table"
         )
         file_path = _file_path(model, context.path)
+        raw_code, compiled_code = _sql_code(model)
         nodes[node_id] = {
             "unique_id": node_id,
             "resource_type": resource_type,
@@ -145,12 +179,15 @@ def build_manifest(context: Context) -> t.Dict[str, t.Any]:
             "original_file_path": file_path,
             "fqn": [
                 _identifier(model.project or project),
-                *(table.db or "").split("."),
+                *filter(None, (table.db or "").split(".")),
                 table.name,
             ],
+            "checksum": _checksum(model, raw_code),
+            "raw_code": raw_code,
+            **({"compiled_code": compiled_code} if not model.kind.is_seed else {}),
             "config": {"materialized": materialized, "enabled": model.enabled},
             "meta": {"sqlmesh": {"kind": model.kind.name, "owner": model.owner}},
-            "depends_on": {"nodes": [], "macros": []},
+            "depends_on": {"macros": []} if model.kind.is_seed else {"nodes": [], "macros": []},
         }
         parent_map[node_id] = []
         child_map[node_id] = []
@@ -168,14 +205,15 @@ def build_manifest(context: Context) -> t.Dict[str, t.Any]:
             )
             parent_map[node_id].append(parent_id)
             child_map[parent_id].append(node_id)
-        nodes[node_id]["depends_on"]["nodes"] = parent_map[node_id]
+        if not model.kind.is_seed:
+            nodes[node_id]["depends_on"]["nodes"] = parent_map[node_id]
 
     return {
         "metadata": {
+            "dbt_schema_version": MANIFEST_SCHEMA,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "project_name": project,
-            "sqlmesh_version": __version__,
-            "format": "sqlmesh-dbt-metadata-v1",
+            "adapter_type": context.default_dialect,
         },
         "nodes": nodes,
         "sources": sources,
@@ -192,4 +230,44 @@ def build_manifest(context: Context) -> t.Dict[str, t.Any]:
         "saved_queries": {},
         "semantic_models": {},
         "unit_tests": {},
+    }
+
+
+def build_catalog(manifest: t.Dict[str, t.Any]) -> t.Dict[str, t.Any]:
+    """Describe known local columns in dbt's catalog format without querying a warehouse."""
+
+    def catalog_entry(resource: t.Dict[str, t.Any]) -> t.Dict[str, t.Any]:
+        kind = resource.get("config", {}).get("materialized")
+        return {
+            "unique_id": resource["unique_id"],
+            "metadata": {
+                "type": "VIEW" if kind == "view" else "BASE TABLE",
+                "schema": resource["schema"],
+                "name": resource["name"],
+                "database": resource["database"],
+                "comment": resource["description"],
+            },
+            "columns": {
+                name: {
+                    "name": name,
+                    "index": index,
+                    "type": column["data_type"] or "",
+                    "comment": column["description"] or None,
+                }
+                for index, (name, column) in enumerate(resource["columns"].items(), start=1)
+            },
+            "stats": {},
+        }
+
+    return {
+        "metadata": {
+            "dbt_schema_version": CATALOG_SCHEMA,
+            "generated_at": manifest["metadata"]["generated_at"],
+        },
+        "nodes": {
+            key: catalog_entry(node)
+            for key, node in manifest["nodes"].items()
+            if node["relation_name"] is not None
+        },
+        "sources": {key: catalog_entry(source) for key, source in manifest["sources"].items()},
     }
