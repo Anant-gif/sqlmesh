@@ -181,6 +181,76 @@ def test_version(runner, tmp_path):
     assert SQLMESH_VERSION in result.output
 
 
+def test_export_manifest_without_state(runner, tmp_path):
+    create_example_project(tmp_path)
+    output = tmp_path / "target" / "manifest.json"
+
+    result = runner.invoke(
+        cli,
+        [
+            "--log-file-dir",
+            str(tmp_path),
+            "--paths",
+            str(tmp_path),
+            "export_manifest",
+            "--output",
+            str(output),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    manifest = json.loads(output.read_text(encoding="utf-8"))
+    assert manifest["metadata"]["format"] == "sqlmesh-dbt-metadata-v1"
+    nodes = {node["name"]: node for node in manifest["nodes"].values()}
+    seed = nodes["seed_model"]
+    incremental = nodes["incremental_model"]
+    full = nodes["full_model"]
+    assert seed["resource_type"] == "seed"
+    assert incremental["config"]["materialized"] == "incremental"
+    assert incremental["depends_on"]["nodes"] == [seed["unique_id"]]
+    assert full["unique_id"] in manifest["child_map"][incremental["unique_id"]]
+    assert manifest["parent_map"][full["unique_id"]] == [incremental["unique_id"]]
+    assert incremental["relation_name"]
+
+
+def test_export_manifest_external_source_and_descriptions(runner, tmp_path):
+    create_example_project(tmp_path)
+    (tmp_path / "models" / "from_source.sql").write_text(
+        """MODEL (
+  name sqlmesh_example.from_source,
+  kind VIEW,
+  description 'Orders from outside SQLMesh',
+  columns (order_id INT),
+  column_descriptions (order_id = 'Order identifier')
+);
+SELECT order_id FROM raw.orders;
+""",
+        encoding="utf-8",
+    )
+    output = tmp_path / "manifest.json"
+    result = runner.invoke(
+        cli,
+        [
+            "--log-file-dir",
+            str(tmp_path),
+            "--paths",
+            str(tmp_path),
+            "export_manifest",
+            "--output",
+            str(output),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    manifest = json.loads(output.read_text(encoding="utf-8"))
+    source = next(value for value in manifest["sources"].values() if value["name"] == "orders")
+    model = next(value for value in manifest["nodes"].values() if value["name"] == "from_source")
+    assert source["schema"] == "raw"
+    assert model["depends_on"]["nodes"] == [source["unique_id"]]
+    assert model["description"] == "Orders from outside SQLMesh"
+    assert model["columns"]["order_id"]["description"] == "Order identifier"
+
+
 def test_plan_no_config(runner, tmp_path):
     # Error if no SQLMesh project config is found
     result = runner.invoke(cli, ["--log-file-dir", tmp_path, "--paths", tmp_path, "plan"])

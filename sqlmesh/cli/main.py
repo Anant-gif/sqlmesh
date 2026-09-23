@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sys
@@ -41,7 +42,7 @@ SKIP_LOAD_COMMANDS = (
     "table_name",
 )
 SKIP_CONTEXT_COMMANDS = ("init", "ui")
-LOCAL_ONLY_COMMANDS = ("format",)
+LOCAL_ONLY_COMMANDS = ("format", "export_manifest")
 # Commands that are local-only when they're passed --local.
 OPTIONAL_LOCAL_COMMANDS = ("lint", "test")
 
@@ -725,6 +726,26 @@ def dag(ctx: click.Context, file: str, select_model: t.List[str]) -> None:
     rendered_dag_path = ctx.obj.render_dag(file, select_model)
     if rendered_dag_path:
         ctx.obj.console.log_success(f"Generated the dag to {rendered_dag_path}")
+
+
+@cli.command("export_manifest")
+@click.option(
+    "--output",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=Path("target/manifest.json"),
+    show_default=True,
+    help="Where to write the SQLMesh metadata manifest.",
+)
+@click.pass_obj
+@error_handler
+@cli_analytics
+def export_manifest(obj: Context, output: Path) -> None:
+    """Export dbt-style model and source metadata for external catalogs."""
+    from sqlmesh.core.manifest import build_manifest
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(build_manifest(obj), indent=2) + "\n", encoding="utf-8")
+    obj.console.log_success(f"Generated the manifest to {output}")
 
 
 @cli.command("create_test")

@@ -31,6 +31,7 @@ Commands:
   dlt_refresh             Attaches to a DLT pipeline with the option to...
   environments            Prints the list of SQLMesh environments with...
   evaluate                Evaluate a model and return a dataframe with a...
+  export_manifest         Export dbt-style model and source metadata for...
   fetchdf                 Run a SQL query and display the results.
   format                  Format all SQL models and audits.
   info                    Print information about a SQLMesh project.
@@ -209,6 +210,34 @@ Options:
                          to.
   --help                 Show this message and exit.
 ```
+
+## export_manifest
+
+```
+Usage: sqlmesh export_manifest [OPTIONS]
+
+  Export dbt-style model and source metadata for external catalogs.
+
+Options:
+  --output FILE  Where to write the SQLMesh metadata manifest. [default:
+                 target/manifest.json]
+  --help         Show this message and exit.
+```
+
+This command reads the local project without connecting to the SQLMesh state store.
+It exports model and external source names, descriptions, columns and types,
+and model dependencies. For example:
+
+```bash
+sqlmesh -p ./my_project export_manifest --output target/manifest.json
+```
+
+The output has dbt-style `nodes`, `sources`, `parent_map`, and `child_map` keys for
+metadata consumers. It is a SQLMesh metadata export, **not** a complete dbt
+manifest conforming to dbt's JSON schema. Consumers that require dbt-specific
+model configuration, compiled SQL, tests, or dbt state comparison need a native
+dbt artifact. `relation_name` is the logical production relation; this command
+does not resolve virtual environment names or deployed snapshot versions.
 
 ## fetchdf
 
