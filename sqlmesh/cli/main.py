@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sys
@@ -41,7 +42,7 @@ SKIP_LOAD_COMMANDS = (
     "table_name",
 )
 SKIP_CONTEXT_COMMANDS = ("init", "ui")
-LOCAL_ONLY_COMMANDS = ("format",)
+LOCAL_ONLY_COMMANDS = ("format", "export_manifest")
 # Commands that are local-only when they're passed --local.
 OPTIONAL_LOCAL_COMMANDS = ("lint", "test")
 
@@ -725,6 +726,39 @@ def dag(ctx: click.Context, file: str, select_model: t.List[str]) -> None:
     rendered_dag_path = ctx.obj.render_dag(file, select_model)
     if rendered_dag_path:
         ctx.obj.console.log_success(f"Generated the dag to {rendered_dag_path}")
+
+
+@cli.command("export_manifest")
+@click.option(
+    "--output",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=Path("target/manifest.json"),
+    show_default=True,
+    help="Where to write the SQLMesh metadata manifest.",
+)
+@click.option(
+    "--catalog-output",
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="Where to write catalog.json (defaults to the directory containing the manifest).",
+)
+@click.pass_obj
+@error_handler
+@cli_analytics
+def export_manifest(obj: Context, output: Path, catalog_output: t.Optional[Path]) -> None:
+    """Export dbt-format manifest and catalog metadata for external tools."""
+    from sqlmesh.core.manifest import build_catalog, build_manifest
+
+    catalog_output = catalog_output or output.with_name("catalog.json")
+    if output.resolve() == catalog_output.resolve():
+        raise click.ClickException("The manifest and catalog output paths must differ.")
+
+    manifest = build_manifest(obj)
+    catalog = build_catalog(manifest)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    catalog_output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    catalog_output.write_text(json.dumps(catalog, indent=2) + "\n", encoding="utf-8")
+    obj.console.log_success(f"Generated the manifest to {output} and catalog to {catalog_output}")
 
 
 @cli.command("create_test")
