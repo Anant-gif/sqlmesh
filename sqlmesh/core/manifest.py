@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Export SQLMesh project metadata as dbt v12 manifest and v1 catalog artifacts.
 
 The artifacts describe the local project, not a deployed SQLMesh environment. They
@@ -16,7 +17,7 @@ from pathlib import Path
 from sqlglot import exp
 
 from sqlmesh.core.context import Context
-from sqlmesh.core.model import Model
+from sqlmesh.core.model import Model, SeedModel, SqlModel
 from sqlmesh.utils.errors import SQLMeshError
 
 logger = logging.getLogger(__name__)
@@ -56,7 +57,7 @@ def _sql_code(model: Model) -> t.Tuple[str, t.Optional[str]]:
     if not model.is_sql:
         return "", None
 
-    raw_code = model.query.sql(dialect=model.dialect)
+    raw_code = t.cast(SqlModel, model).query.sql(dialect=model.dialect)
     try:
         # SQLMesh's renderer expands macros and resolves model references without
         # running the SQL. Time-dependent macros use SQLMesh's epoch defaults.
@@ -72,7 +73,13 @@ def _checksum(model: Model, raw_code: str) -> t.Dict[str, str]:
         content = model._path.read_bytes()
     else:
         content = (model.fqn + raw_code).encode("utf-8")
-    return {"name": "sha256", "checksum": hashlib.sha256(content).hexdigest()}
+    digest = hashlib.sha256(content)
+    if model.is_seed:
+        # The SQL definition only points at the CSV. Include the loaded content so
+        # an export reflects data changes even when the definition is unchanged.
+        digest.update(b"\0")
+        digest.update(t.cast(SeedModel, model).seed.content.encode("utf-8"))
+    return {"name": "sha256", "checksum": digest.hexdigest()}
 
 
 def build_manifest(context: Context) -> t.Dict[str, t.Any]:
@@ -106,13 +113,16 @@ def build_manifest(context: Context) -> t.Dict[str, t.Any]:
 
     def columns_for(model: Model) -> t.Dict[str, t.Dict[str, t.Any]]:
         types = model.columns_to_types or {}
+        # Catalog indices represent column positions, so retain SQLMesh's order.
+        # Description-only columns have no known position and follow known columns.
+        columns = [*types, *sorted(model.column_descriptions.keys() - types.keys())]
         return {
             column: {
                 "name": column,
                 "description": model.column_descriptions.get(column, ""),
                 "data_type": types[column].sql(dialect=model.dialect) if column in types else None,
             }
-            for column in sorted(types.keys() | model.column_descriptions.keys())
+            for column in columns
         }
 
     def source_for(name: str, model: t.Optional[Model] = None) -> str:
@@ -153,7 +163,9 @@ def build_manifest(context: Context) -> t.Dict[str, t.Any]:
         node_id = ids[model.fqn]
         resource_type = "seed" if model.kind.is_seed else "model"
         materialized = (
-            "ephemeral"
+            "seed"
+            if model.kind.is_seed
+            else "ephemeral"
             if model.kind.is_embedded
             else "view"
             if model.kind.is_view

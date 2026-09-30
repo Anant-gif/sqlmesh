@@ -239,7 +239,11 @@ Both files validate against their respective dbt JSON schemas. They are
 **metadata exports**, not records of a dbt execution: SQLMesh audits are not
 converted to dbt tests, and no run results or source freshness are generated.
 The catalog's column types come from local model definitions and inference,
-not from inspecting the warehouse. Rendered SQL uses SQLMesh's default epoch
+not from inspecting the warehouse. Known columns retain their SQLMesh order;
+columns known only through descriptions follow them, sorted by name. Catalog
+indices describe this local order, not a verified warehouse schema. Seed
+checksums include both the model definition and the loaded CSV content.
+Rendered SQL uses SQLMesh's default epoch
 for time-dependent macros and is intended for documentation and lineage.
 `relation_name` is the logical production relation; this command does not
 resolve virtual environment names or deployed snapshot versions. Do not use
